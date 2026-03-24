@@ -1,5 +1,5 @@
 # Coinbase MPC
-This is a fork of Coinbase MPC with minimal modifications. These modifications are still in development and not fully audited. For production use, please refer to the original Coinbase repository.
+This is a fork of Coinbase MPC with minimal modifications. These modifications are still in development and not fully audited. For production use, contribution and security reports, please refer to the original Coinbase repository.
 
 # Table of Contents
 
