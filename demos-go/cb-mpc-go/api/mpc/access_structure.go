@@ -45,11 +45,12 @@ const (
 // NOTE: This struct purposefully embeds _no_ validation logic. Consumers are
 // expected to perform their own checks or rely on downstream C++ code.
 type AccessNode struct {
-	Name     string        // human-readable identifier (root == "")
-	Kind     NodeKind      // AND / OR / THRESHOLD / LEAF
-	Parent   *AccessNode   // nil for root
-	Children []*AccessNode // nil or empty slice for leaf
-	K        int           // threshold value if Kind == KindThreshold
+	Name        string        // human-readable identifier (root == "")
+	Kind        NodeKind      // AND / OR / THRESHOLD / LEAF
+	Parent      *AccessNode   // nil for root
+	Children    []*AccessNode // nil or empty slice for leaf
+	K           int           // threshold value if Kind == KindThreshold
+	ExplicitPID *int          // if set, overrides the hash-derived PID for this node
 }
 
 // ================= AccessStructure wrapper =========================
@@ -121,6 +122,9 @@ func (as *AccessStructure) toCryptoAC() cgobinding.C_AcPtr {
 	var build func(n *AccessNode) cgobinding.C_NodePtr
 	build = func(n *AccessNode) cgobinding.C_NodePtr {
 		cNode := cgobinding.NewNode(kindToC(n.Kind), n.Name, n.K)
+		if n.ExplicitPID != nil {
+			cgobinding.SetNodeExplicitPID(cNode, *n.ExplicitPID)
+		}
 		for _, child := range n.Children {
 			if child == nil {
 				continue
