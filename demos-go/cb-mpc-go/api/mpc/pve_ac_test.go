@@ -128,6 +128,86 @@ func TestPVEAcEncryptDecrypt(t *testing.T) {
 	}
 }
 
+// TestPVEAcEncryptDecryptExplicitPID checks that an access structure whose leaf
+// nodes carry explicit PIDs produces a valid encrypt → decrypt round-trip.
+func TestPVEAcEncryptDecryptExplicitPID(t *testing.T) {
+	cv, err := curve.NewP256()
+	require.NoError(t, err)
+	defer cv.Free()
+
+	const (
+		nParties  = 3
+		threshold = 2
+	)
+	pnames := mocknet.GeneratePartyNames(nParties)
+
+	// Build access structure with caller-supplied PIDs on each leaf.
+	kids := make([]*AccessNode, nParties)
+	for i, name := range pnames {
+		pid := i + 1
+		kids[i] = &AccessNode{Name: name, Kind: KindLeaf, ExplicitPID: &pid}
+	}
+	ac := &AccessStructure{Root: Threshold("", threshold, kids...), Curve: cv}
+
+	pve, err := NewPVE(Config{KEM: newTestXorKEM()})
+	require.NoError(t, err)
+
+	pubMap := make(map[string]BaseEncPublicKey, nParties)
+	prvMap := make(map[string]BaseEncPrivateKey, nParties)
+	for _, name := range pnames {
+		dk, ek, err := newTestXorKEM().Generate()
+		require.NoError(t, err)
+		pubMap[name] = BaseEncPublicKey(ek)
+		prvMap[name] = BaseEncPrivateKey(dk)
+	}
+
+	privValues := make([]*curve.Scalar, nParties)
+	for i := range privValues {
+		privValues[i], err = cv.RandomScalar()
+		require.NoError(t, err)
+	}
+
+	pubShares := make([]*curve.Point, nParties)
+	for i, s := range privValues {
+		pubShares[i], err = cv.MultiplyGenerator(s)
+		require.NoError(t, err)
+	}
+
+	encResp, err := pve.AcEncrypt(&PVEAcEncryptRequest{
+		AccessStructure: ac, PublicKeys: pubMap, PrivateValues: privValues,
+		Label: "explicit-pid-test", Curve: cv,
+	})
+	require.NoError(t, err)
+	require.Greater(t, len(encResp.EncryptedBundle), 0)
+
+	verResp, err := pve.AcVerify(&PVEAcVerifyRequest{
+		AccessStructure: ac, PublicKeys: pubMap,
+		EncryptedBundle: encResp.EncryptedBundle, PublicShares: pubShares,
+		Label: "explicit-pid-test",
+	})
+	require.NoError(t, err)
+	require.True(t, verResp.Valid)
+
+	shares := make(map[string][]byte)
+	for _, name := range pnames {
+		resp, err := pve.AcPartyDecryptRow(&PVEAcPartyDecryptRowRequest{
+			AccessStructure: ac, Path: name, PrivateKey: prvMap[name],
+			EncryptedBundle: encResp.EncryptedBundle, Label: "explicit-pid-test", RowIndex: 0,
+		})
+		require.NoError(t, err)
+		shares[name] = resp.Share
+	}
+
+	aggResp, err := pve.AcAggregateToRestoreRow(&PVEAcAggregateToRestoreRowRequest{
+		AccessStructure: ac, EncryptedBundle: encResp.EncryptedBundle,
+		Label: "explicit-pid-test", RowIndex: 0, Shares: shares,
+	})
+	require.NoError(t, err)
+	for i := range privValues {
+		require.Equal(t, privValues[i].Bytes, aggResp.PrivateValues[i].Bytes)
+	}
+}
+
 // TestPVEAcWithRSAHSMKEM verifies quorum PVE with an HSM-like RSA KEM backend.
 func TestPVEAcWithRSAHSMKEM(t *testing.T) {
 	const (
