@@ -22,3 +22,9 @@ a.out
 # gh-pages files
 docsgen/
 node_modules/
+
+# wasm
+vendors/openssl-wasm
+
+# misc
+.DS_Store

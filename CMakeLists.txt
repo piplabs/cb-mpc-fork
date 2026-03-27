@@ -105,7 +105,7 @@ if(NOT IS_MACOS)
   set(USE_FETCH_CONTENT true)
 endif()
 
-if(BUILD_TESTS)
+if(BUILD_TESTS AND NOT IS_WASM)
   enable_testing()
   add_subdirectory(tests)
 endif()

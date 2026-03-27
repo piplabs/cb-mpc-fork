@@ -5,11 +5,11 @@
 #include "TargetConditionals.h"
 #endif
 
-#if defined(__x86_64__)
+#if defined(__x86_64__) && !defined(__EMSCRIPTEN__)
 #include <cpuid.h>
 #endif
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
 
 #include <link.h>
 #include <linux/sockios.h>
@@ -26,11 +26,11 @@
 
 #endif
 
-#if defined(__linux__) || defined(__APPLE__)
+#if (defined(__linux__) || defined(__APPLE__)) && !defined(__EMSCRIPTEN__)
 #include <syslog.h>
 #endif
 
-#if defined(_LP64) && defined(__x86_64__)
+#if defined(_LP64) && defined(__x86_64__) && !defined(__EMSCRIPTEN__)
 extern "C" {
 #include <x86intrin.h>
 }
@@ -88,13 +88,22 @@ extern "C" {
 
 #include <chrono>
 #include <condition_variable>
+#include <mutex>
+#include <thread>
+
+#if defined(__EMSCRIPTEN__)
+// Minimal includes for WASM/Emscripten
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <pthread.h>
+#else
 #include <cxxabi.h>
 #include <dirent.h>
-#include <mutex>
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <sys/utsname.h>
-#include <thread>
 #include <unistd.h>
 
 #ifdef __APPLE__
@@ -125,8 +134,9 @@ extern "C" {
 #include <sys/types.h>
 #include <termios.h>
 #include <unwind.h>
+#endif  // __EMSCRIPTEN__
 
-#ifdef __aarch64__
+#if defined(__aarch64__) && !defined(__EMSCRIPTEN__)
 #include <arm_neon.h>
 #endif
 

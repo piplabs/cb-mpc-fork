@@ -1,6 +1,8 @@
 add_library(cbmpc_protocol OBJECT "")
 
-target_precompile_headers(cbmpc_protocol PUBLIC "mpc_job.h")
+if(NOT IS_WASM)
+  target_precompile_headers(cbmpc_protocol PUBLIC "mpc_job.h")
+endif()
 
 target_sources(cbmpc_protocol  PRIVATE
   int_commitment.cpp

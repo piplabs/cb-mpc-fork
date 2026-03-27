@@ -6,6 +6,10 @@ This is a fork of Coinbase MPC with minimal modifications. These modifications a
 - [Introduction](#introduction)
   - [Overview](#overview)
   - [Key Features](#key-features)
+- [Building the code](#building-the-code)
+  - [On macOS](#on-macos)
+  - [WASM (WebAssembly)](#wasm-webassembly)
+  - [In Docker](#in-docker)
 - [Directory Structure](#directory-structure)
 - [Supported Protocols](#supported-protocols)
 - [Design Principles and Secure Usage](#design-principles-and-secure-usage)
@@ -181,6 +185,82 @@ brew link --force --overwrite llvm@14
 ```
 
 then `make lint` will format all `.cpp` and `.h` files in `src` and `tests`
+
+## WASM (WebAssembly)
+
+The library can be compiled to WebAssembly using [Emscripten](https://emscripten.org/), allowing it to be used from JavaScript/TypeScript.
+
+### Prerequisites
+
+Install and activate the Emscripten SDK:
+
+```bash
+git clone https://github.com/emscripten-core/emsdk.git
+cd emsdk
+./emsdk install latest
+./emsdk activate latest
+source ./emsdk_env.sh
+```
+
+### Build OpenSSL for WASM
+
+```bash
+make openssl-wasm
+```
+
+This builds a WASM-compatible OpenSSL and installs it locally to `vendors/openssl-wasm/` (no sudo required).
+
+### Build the library
+
+```bash
+make build-wasm
+```
+
+The output is a static library (`libcbmpc.a` as WASM bitcode) under `lib/Release/`.
+
+### Build the TDH2 WASM module (for TypeScript/JavaScript)
+
+```bash
+make wasm-module
+```
+
+This compiles the TDH2 wrapper (`wasm/tdh2_wasm.cpp`) with the static library into a ready-to-use WASM module:
+- `wasm/dist/cb-mpc-tdh2.js` — ES module loader
+- `wasm/dist/cb-mpc-tdh2.wasm` — WASM binary
+
+Copy both files into your TypeScript project alongside `wasm/loader.ts`, then use:
+
+```typescript
+import { initTdh2Wasm } from "./wasm/loader.js";
+
+const tdh2 = await initTdh2Wasm();
+
+// Encrypt
+const ciphertext = tdh2.encrypt(globalPubKeyPoint, plaintext, label);
+
+// Combine partial decryptions
+const plaintext = tdh2.combine({
+  pubKeyPoint: globalPubKeyPoint,
+  ciphertext: ciphertext.raw,
+  label,
+  partials,
+  threshold: 3,
+});
+```
+
+### Custom WASM build
+
+To produce a `.wasm` with different exported functions, write a C/C++ wrapper and compile:
+
+```bash
+em++ wrapper.cpp -o output.js \
+  -I src/ -I vendors/openssl-wasm/include \
+  -L lib/Release -lcbmpc \
+  -L vendors/openssl-wasm/lib -lcrypto \
+  -s MODULARIZE=1 -s EXPORT_ES6=1 \
+  -s EXPORTED_FUNCTIONS='["_your_function"]' \
+  -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]'
+```
 
 ## In Docker
 
