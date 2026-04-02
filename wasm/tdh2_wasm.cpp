@@ -89,7 +89,7 @@ int wasm_tdh2_encrypt(int pub_key_handle,
   mem_t label(label_data, label_size);
 
   tdh2_ciphertext_t ct = pk->encrypt(plain, label);
-  buf_t out = coinbase::ser(ct);
+  buf_t out = coinbase::convert(ct);
 
   *out_size = out.size();
   *out_ptr = (uint8_t*)malloc(out.size());
@@ -110,7 +110,7 @@ int wasm_tdh2_verify(int pub_key_handle,
 
   public_key_t* pk = (public_key_t*)(intptr_t)pub_key_handle;
   tdh2_ciphertext_t ct;
-  error_t rv = coinbase::deser(mem_t(ct_data, ct_size), ct);
+  error_t rv = coinbase::convert(ct, mem_t(ct_data, ct_size));
   if (rv) return rv;
   ct.L = buf_t(mem_t(label_data, label_size));
   return ct.verify(*pk, mem_t(label_data, label_size));
