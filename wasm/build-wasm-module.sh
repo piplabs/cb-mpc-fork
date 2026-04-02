@@ -65,7 +65,8 @@ em++ -O3 \
     "_wasm_ac_new",
     "_wasm_ac_free",
     "_wasm_tdh2_combine",
-    "_wasm_ptr_size"
+    "_wasm_ptr_size",
+    "_wasm_seed_random"
   ]' \
   -s EXPORTED_RUNTIME_METHODS='["getValue","setValue","HEAPU8","HEAP32"]' \
   -s ALLOW_MEMORY_GROWTH=1 \

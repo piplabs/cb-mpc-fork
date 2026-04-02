@@ -10,6 +10,7 @@
  */
 
 #include <emscripten/emscripten.h>
+#include <openssl/rand.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -267,6 +268,21 @@ int wasm_tdh2_combine(int ac_handle, int pub_key_handle, int n,
   *out_ptr = (uint8_t*)malloc(plain.size());
   memcpy(*out_ptr, plain.data(), plain.size());
   return 0;
+}
+
+/**
+ * Seed OpenSSL's RAND with external entropy.
+ *
+ * WASM has no OS entropy source (/dev/urandom, getentropy). The JS caller
+ * must provide entropy from crypto.getRandomValues() and call this function
+ * before any operation that uses RAND_bytes() (e.g. TDH2 encrypt).
+ *
+ * @param data  Pointer to entropy bytes
+ * @param size  Number of bytes (recommended: >= 48)
+ */
+EMSCRIPTEN_KEEPALIVE
+void wasm_seed_random(const uint8_t* data, int size) {
+  RAND_seed(data, size);
 }
 
 /**
