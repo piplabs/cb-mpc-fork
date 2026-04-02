@@ -17,6 +17,8 @@
 
 #include <cbmpc/core/buf.h>
 #include <cbmpc/core/cmem.h>
+#include <cbmpc/core/convert.h>
+#include <cbmpc/core/extended_uint.h>
 #include <cbmpc/crypto/base.h>
 #include <cbmpc/crypto/secret_sharing.h>
 #include <cbmpc/crypto/tdh2.h>
@@ -224,9 +226,9 @@ int wasm_tdh2_combine(int ac_handle, int pub_key_handle, int n,
   ss::ac_t* ac = (ss::ac_t*)(intptr_t)ac_handle;
   public_key_t* pk = (public_key_t*)(intptr_t)pub_key_handle;
 
-  // Parse ciphertext
+  // Parse ciphertext (use convert to match Go bindings format)
   tdh2_ciphertext_t ct;
-  error_t rv = coinbase::deser(mem_t(ct_data, ct_size), ct);
+  error_t rv = coinbase::convert(ct, mem_t(ct_data, ct_size));
   if (rv) return rv;
   ct.L = buf_t(mem_t(label_data, label_size));
 
@@ -242,7 +244,7 @@ int wasm_tdh2_combine(int ac_handle, int pub_key_handle, int n,
     std::string name((const char*)(names_data + names_offset), names_sizes[i]);
     names_offset += names_sizes[i];
 
-    // Deserialize public share point (with curve info from pub key)
+    // Deserialize public share point
     ecc_point_t Qi(pk->Q.get_curve());
     mem_t pub_share_mem(pub_shares_data + pub_shares_offset, pub_shares_sizes[i]);
     rv = coinbase::deser(pub_share_mem, Qi);
@@ -250,11 +252,11 @@ int wasm_tdh2_combine(int ac_handle, int pub_key_handle, int n,
     pub_shares[name] = Qi;
     pub_shares_offset += pub_shares_sizes[i];
 
-    // Deserialize partial decryption
+    // Deserialize partial decryption (use convert to match Go bindings format)
     partial_decryption_t pd;
     pd.Xi = ecc_point_t(pk->Q.get_curve());
     mem_t pd_mem(partials_data + partials_offset, partials_sizes[i]);
-    rv = coinbase::deser(pd_mem, pd);
+    rv = coinbase::convert(pd, pd_mem);
     if (rv) return rv;
     pds[name] = pd;
     partials_offset += partials_sizes[i];
@@ -287,6 +289,64 @@ void wasm_seed_random(const uint8_t* data, int size) {
   // entropy estimate (== size) marks the pool as sufficiently seeded.
   RAND_seed(data, size);
   RAND_add(data, size, (double)size);
+}
+
+/**
+ * Test bn_t::rand range correctness.
+ * Returns 0 if OK, or error code.
+ */
+EMSCRIPTEN_KEEPALIVE
+int wasm_test_bn_rand() {
+  // Ed25519 order
+  bn_t q_val = bn_t::from_hex("1000000000000000000000000000000014DEF9DEA2F79CD65812631A5CF5D3ED");
+  mod_t q(q_val, true);
+
+  for (int i = 0; i < 100; i++) {
+    bn_t r = bn_t::rand(q_val);
+    if (r.sign() < 0) return 1;  // negative
+    if (r >= q_val) return 2;     // out of range
+    // Also test hash_number().mod(q)
+  }
+  return 0;
+}
+
+/**
+ * Diagnostic: test uint128 arithmetic correctness in WASM.
+ * Returns 0 if all tests pass, or a positive error code identifying the failure.
+ */
+EMSCRIPTEN_KEEPALIVE
+int wasm_test_uint128() {
+  // Test 1: 128-bit multiplication
+  unsigned __int128 a = (unsigned __int128)0xFFFFFFFFFFFFFFFFULL * 0xFFFFFFFFFFFFFFFFULL;
+  uint64_t hi = (uint64_t)(a >> 64);
+  uint64_t lo = (uint64_t)a;
+  if (hi != 0xFFFFFFFFFFFFFFFEULL || lo != 0x0000000000000001ULL) return 1;
+
+  // Test 2: 128-bit addition with carry
+  unsigned __int128 b = (unsigned __int128)0xFFFFFFFFFFFFFFFFULL + 1;
+  if ((uint64_t)(b >> 64) != 1 || (uint64_t)b != 0) return 2;
+
+  // Test 3: addx carry propagation
+  uint64_t carry = 0;
+  uint64_t r = addx(0xFFFFFFFFFFFFFFFFULL, 1ULL, carry);
+  if (r != 0 || carry != 1) return 3;
+
+  // Test 4: subx borrow propagation
+  uint64_t borrow = 0;
+  r = subx(0ULL, 1ULL, borrow);
+  if (r != 0xFFFFFFFFFFFFFFFFULL || borrow != 1) return 4;
+
+  // Test 5: 128-bit shift
+  unsigned __int128 c = (unsigned __int128)1 << 64;
+  if ((uint64_t)(c >> 64) != 1 || (uint64_t)c != 0) return 5;
+
+  // Test 6: field element multiply (small values)
+  unsigned __int128 d = (unsigned __int128)0x7FFFFFFFFFFFFFFFULL * 0x7FFFFFFFFFFFFFFFULL;
+  // Expected: 0x3FFFFFFFFFFFFFFF0000000000000001
+  if ((uint64_t)(d >> 64) != 0x3FFFFFFFFFFFFFFFULL) return 6;
+  if ((uint64_t)d != 0x0000000000000001ULL) return 6;
+
+  return 0;
 }
 
 /**
