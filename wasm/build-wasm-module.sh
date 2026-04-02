@@ -72,7 +72,7 @@ em++ -O3 \
   -s ALLOW_MEMORY_GROWTH=1 \
   -s ENVIRONMENT='web,node' \
   -s NO_EXIT_RUNTIME=1 \
-  -s FILESYSTEM=0 \
+  -s FILESYSTEM=1 \
   -s ASSERTIONS=0 \
   -I "${PROJECT_ROOT}/src/" \
   -I "${OPENSSL_DIR}/include" \

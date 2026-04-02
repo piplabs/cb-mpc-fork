@@ -282,7 +282,11 @@ int wasm_tdh2_combine(int ac_handle, int pub_key_handle, int n,
  */
 EMSCRIPTEN_KEEPALIVE
 void wasm_seed_random(const uint8_t* data, int size) {
+  // Use both RAND_seed and RAND_add to ensure the DRBG is properly seeded.
+  // OpenSSL 3.x requires the DRBG to be initialized; RAND_add with high
+  // entropy estimate (== size) marks the pool as sufficiently seeded.
   RAND_seed(data, size);
+  RAND_add(data, size, (double)size);
 }
 
 /**
