@@ -65,6 +65,7 @@ em++ -O0 -g \
     "_wasm_ac_new",
     "_wasm_ac_free",
     "_wasm_tdh2_combine",
+    "_wasm_tdh2_extract_label",
     "_wasm_ptr_size",
     "_wasm_seed_random",
     "_wasm_test_uint128"

@@ -32,6 +32,31 @@ using node_e = coinbase::crypto::ss::node_e;
 
 extern "C" {
 
+// ============ WASM Envelope Format =============
+// The WASM layer serializes TDH2 ciphertexts with an envelope that appends
+// the label (associated data) to the core ciphertext, since the cb-mpc
+// convert() serialization does not include the label field (ct.L).
+//
+// Format: [core_ct_bytes][label_bytes][4-byte label_size LE]
+//
+// This lets wasm_tdh2_extract_label recover the label, and wasm_tdh2_verify /
+// wasm_tdh2_combine strip the envelope automatically.
+
+static int parse_envelope(const uint8_t* data, int size,
+                          const uint8_t** core_out, int* core_size,
+                          const uint8_t** label_out, int* label_size) {
+  if (size < 4) return -1;
+  uint32_t lsz = 0;
+  memcpy(&lsz, data + size - 4, 4);  // LE
+  int expected = (int)lsz + 4;
+  if (expected > size) return -1;
+  *core_size = size - expected;
+  *core_out = data;
+  *label_size = (int)lsz;
+  *label_out = data + *core_size;
+  return 0;
+}
+
 // ============ Result struct for returning bytes to JS =============
 // JS reads out_ptr and out_size, then copies the data, then calls free(out_ptr).
 
@@ -89,11 +114,16 @@ int wasm_tdh2_encrypt(int pub_key_handle,
   mem_t label(label_data, label_size);
 
   tdh2_ciphertext_t ct = pk->encrypt(plain, label);
-  buf_t out = coinbase::convert(ct);
+  buf_t core = coinbase::convert(ct);
 
-  *out_size = out.size();
-  *out_ptr = (uint8_t*)malloc(out.size());
-  memcpy(*out_ptr, out.data(), out.size());
+  // Envelope: [core][label][4-byte label_size LE]
+  uint32_t lsz = (uint32_t)label_size;
+  int total = core.size() + label_size + 4;
+  *out_size = total;
+  *out_ptr = (uint8_t*)malloc(total);
+  memcpy(*out_ptr, core.data(), core.size());
+  memcpy(*out_ptr + core.size(), label_data, label_size);
+  memcpy(*out_ptr + core.size() + label_size, &lsz, 4);
   return 0;
 }
 
@@ -108,10 +138,21 @@ int wasm_tdh2_verify(int pub_key_handle,
                      const uint8_t* label_data, int label_size) {
   if (!pub_key_handle) return -1;
 
+  // Strip envelope if present
+  const uint8_t* core_data = ct_data;
+  int core_size = ct_size;
+  const uint8_t* env_label = nullptr;
+  int env_label_size = 0;
+  parse_envelope(ct_data, ct_size, &core_data, &core_size, &env_label, &env_label_size);
+
   public_key_t* pk = (public_key_t*)(intptr_t)pub_key_handle;
   tdh2_ciphertext_t ct;
-  error_t rv = coinbase::convert(ct, mem_t(ct_data, ct_size));
-  if (rv) return rv;
+  error_t rv = coinbase::convert(ct, mem_t(core_data, core_size));
+  if (rv) {
+    // Fallback: try without envelope stripping (raw core format)
+    rv = coinbase::convert(ct, mem_t(ct_data, ct_size));
+    if (rv) return rv;
+  }
   ct.L = buf_t(mem_t(label_data, label_size));
   return ct.verify(*pk, mem_t(label_data, label_size));
 }
@@ -226,10 +267,21 @@ int wasm_tdh2_combine(int ac_handle, int pub_key_handle, int n,
   ss::ac_t* ac = (ss::ac_t*)(intptr_t)ac_handle;
   public_key_t* pk = (public_key_t*)(intptr_t)pub_key_handle;
 
+  // Strip envelope if present
+  const uint8_t* core_data = ct_data;
+  int core_size = ct_size;
+  const uint8_t* env_label = nullptr;
+  int env_label_size = 0;
+  parse_envelope(ct_data, ct_size, &core_data, &core_size, &env_label, &env_label_size);
+
   // Parse ciphertext (use convert to match Go bindings format)
   tdh2_ciphertext_t ct;
-  error_t rv = coinbase::convert(ct, mem_t(ct_data, ct_size));
-  if (rv) return rv;
+  error_t rv = coinbase::convert(ct, mem_t(core_data, core_size));
+  if (rv) {
+    // Fallback: try without envelope stripping (raw core format)
+    rv = coinbase::convert(ct, mem_t(ct_data, ct_size));
+    if (rv) return rv;
+  }
   ct.L = buf_t(mem_t(label_data, label_size));
 
   // Build name → pub_share and name → partial_decryption maps
@@ -346,6 +398,41 @@ int wasm_test_uint128() {
   if ((uint64_t)(d >> 64) != 0x3FFFFFFFFFFFFFFFULL) return 6;
   if ((uint64_t)d != 0x0000000000000001ULL) return 6;
 
+  return 0;
+}
+
+/**
+ * Extract the label (associated data) from a serialized TDH2 ciphertext.
+ *
+ * @param ct_data   Serialized ciphertext bytes
+ * @param ct_size   Size of ct_data
+ * @param out_ptr   Output: pointer to malloc'd label bytes
+ * @param out_size  Output: size of label
+ * @return 0 on success
+ */
+EMSCRIPTEN_KEEPALIVE
+int wasm_tdh2_extract_label(
+  const uint8_t* ct_data, int ct_size,
+  uint8_t** out_ptr, int* out_size
+) {
+  if (!out_ptr || !out_size) return -1;
+
+  const uint8_t* core_data = nullptr;
+  int core_size = 0;
+  const uint8_t* label_data = nullptr;
+  int label_size = 0;
+  if (parse_envelope(ct_data, ct_size, &core_data, &core_size, &label_data, &label_size) != 0) {
+    // No valid envelope — return empty label
+    *out_size = 0;
+    *out_ptr = (uint8_t*)malloc(1);
+    return 0;
+  }
+
+  *out_size = label_size;
+  *out_ptr = (uint8_t*)malloc(label_size > 0 ? label_size : 1);
+  if (label_size > 0) {
+    memcpy(*out_ptr, label_data, label_size);
+  }
   return 0;
 }
 
