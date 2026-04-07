@@ -4,7 +4,10 @@
 
 namespace coinbase::crypto {
 
-#if defined(TARGET_IPHONE_SIMULATOR) && TARGET_IPHONE_SIMULATOR
+#if (defined(TARGET_IPHONE_SIMULATOR) && TARGET_IPHONE_SIMULATOR) || defined(__EMSCRIPTEN__)
+// On iPhone simulator and WASM (32-bit), force vartime mode.
+// The constant-time Barrett reduction assumes 64-bit BN_ULONG words
+// but WASM32 uses 32-bit BN_ULONG, causing incorrect results.
 static thread_local int vartime_scope = 1;
 #else
 static thread_local int vartime_scope = 0;

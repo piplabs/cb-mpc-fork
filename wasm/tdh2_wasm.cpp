@@ -10,12 +10,15 @@
  */
 
 #include <emscripten/emscripten.h>
+#include <openssl/rand.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <cbmpc/core/buf.h>
 #include <cbmpc/core/cmem.h>
+#include <cbmpc/core/convert.h>
+#include <cbmpc/core/extended_uint.h>
 #include <cbmpc/crypto/base.h>
 #include <cbmpc/crypto/secret_sharing.h>
 #include <cbmpc/crypto/tdh2.h>
@@ -28,6 +31,31 @@ using node_t = coinbase::crypto::ss::node_t;
 using node_e = coinbase::crypto::ss::node_e;
 
 extern "C" {
+
+// ============ WASM Envelope Format =============
+// The WASM layer serializes TDH2 ciphertexts with an envelope that appends
+// the label (associated data) to the core ciphertext, since the cb-mpc
+// convert() serialization does not include the label field (ct.L).
+//
+// Format: [core_ct_bytes][label_bytes][4-byte label_size LE]
+//
+// This lets wasm_tdh2_extract_label recover the label, and wasm_tdh2_verify /
+// wasm_tdh2_combine strip the envelope automatically.
+
+static int parse_envelope(const uint8_t* data, int size,
+                          const uint8_t** core_out, int* core_size,
+                          const uint8_t** label_out, int* label_size) {
+  if (size < 4) return -1;
+  uint32_t lsz = 0;
+  memcpy(&lsz, data + size - 4, 4);  // LE
+  int expected = (int)lsz + 4;
+  if (expected > size) return -1;
+  *core_size = size - expected;
+  *core_out = data;
+  *label_size = (int)lsz;
+  *label_out = data + *core_size;
+  return 0;
+}
 
 // ============ Result struct for returning bytes to JS =============
 // JS reads out_ptr and out_size, then copies the data, then calls free(out_ptr).
@@ -86,11 +114,16 @@ int wasm_tdh2_encrypt(int pub_key_handle,
   mem_t label(label_data, label_size);
 
   tdh2_ciphertext_t ct = pk->encrypt(plain, label);
-  buf_t out = coinbase::ser(ct);
+  buf_t core = coinbase::convert(ct);
 
-  *out_size = out.size();
-  *out_ptr = (uint8_t*)malloc(out.size());
-  memcpy(*out_ptr, out.data(), out.size());
+  // Envelope: [core][label][4-byte label_size LE]
+  uint32_t lsz = (uint32_t)label_size;
+  int total = core.size() + label_size + 4;
+  *out_size = total;
+  *out_ptr = (uint8_t*)malloc(total);
+  memcpy(*out_ptr, core.data(), core.size());
+  memcpy(*out_ptr + core.size(), label_data, label_size);
+  memcpy(*out_ptr + core.size() + label_size, &lsz, 4);
   return 0;
 }
 
@@ -105,10 +138,21 @@ int wasm_tdh2_verify(int pub_key_handle,
                      const uint8_t* label_data, int label_size) {
   if (!pub_key_handle) return -1;
 
+  // Strip envelope if present
+  const uint8_t* core_data = ct_data;
+  int core_size = ct_size;
+  const uint8_t* env_label = nullptr;
+  int env_label_size = 0;
+  parse_envelope(ct_data, ct_size, &core_data, &core_size, &env_label, &env_label_size);
+
   public_key_t* pk = (public_key_t*)(intptr_t)pub_key_handle;
   tdh2_ciphertext_t ct;
-  error_t rv = coinbase::deser(mem_t(ct_data, ct_size), ct);
-  if (rv) return rv;
+  error_t rv = coinbase::convert(ct, mem_t(core_data, core_size));
+  if (rv) {
+    // Fallback: try without envelope stripping (raw core format)
+    rv = coinbase::convert(ct, mem_t(ct_data, ct_size));
+    if (rv) return rv;
+  }
   ct.L = buf_t(mem_t(label_data, label_size));
   return ct.verify(*pk, mem_t(label_data, label_size));
 }
@@ -223,10 +267,21 @@ int wasm_tdh2_combine(int ac_handle, int pub_key_handle, int n,
   ss::ac_t* ac = (ss::ac_t*)(intptr_t)ac_handle;
   public_key_t* pk = (public_key_t*)(intptr_t)pub_key_handle;
 
-  // Parse ciphertext
+  // Strip envelope if present
+  const uint8_t* core_data = ct_data;
+  int core_size = ct_size;
+  const uint8_t* env_label = nullptr;
+  int env_label_size = 0;
+  parse_envelope(ct_data, ct_size, &core_data, &core_size, &env_label, &env_label_size);
+
+  // Parse ciphertext (use convert to match Go bindings format)
   tdh2_ciphertext_t ct;
-  error_t rv = coinbase::deser(mem_t(ct_data, ct_size), ct);
-  if (rv) return rv;
+  error_t rv = coinbase::convert(ct, mem_t(core_data, core_size));
+  if (rv) {
+    // Fallback: try without envelope stripping (raw core format)
+    rv = coinbase::convert(ct, mem_t(ct_data, ct_size));
+    if (rv) return rv;
+  }
   ct.L = buf_t(mem_t(label_data, label_size));
 
   // Build name → pub_share and name → partial_decryption maps
@@ -241,7 +296,7 @@ int wasm_tdh2_combine(int ac_handle, int pub_key_handle, int n,
     std::string name((const char*)(names_data + names_offset), names_sizes[i]);
     names_offset += names_sizes[i];
 
-    // Deserialize public share point (with curve info from pub key)
+    // Deserialize public share point
     ecc_point_t Qi(pk->Q.get_curve());
     mem_t pub_share_mem(pub_shares_data + pub_shares_offset, pub_shares_sizes[i]);
     rv = coinbase::deser(pub_share_mem, Qi);
@@ -249,11 +304,11 @@ int wasm_tdh2_combine(int ac_handle, int pub_key_handle, int n,
     pub_shares[name] = Qi;
     pub_shares_offset += pub_shares_sizes[i];
 
-    // Deserialize partial decryption
+    // Deserialize partial decryption (use convert to match Go bindings format)
     partial_decryption_t pd;
     pd.Xi = ecc_point_t(pk->Q.get_curve());
     mem_t pd_mem(partials_data + partials_offset, partials_sizes[i]);
-    rv = coinbase::deser(pd_mem, pd);
+    rv = coinbase::convert(pd, pd_mem);
     if (rv) return rv;
     pds[name] = pd;
     partials_offset += partials_sizes[i];
@@ -266,6 +321,118 @@ int wasm_tdh2_combine(int ac_handle, int pub_key_handle, int n,
   *out_size = plain.size();
   *out_ptr = (uint8_t*)malloc(plain.size());
   memcpy(*out_ptr, plain.data(), plain.size());
+  return 0;
+}
+
+/**
+ * Seed OpenSSL's RAND with external entropy.
+ *
+ * WASM has no OS entropy source (/dev/urandom, getentropy). The JS caller
+ * must provide entropy from crypto.getRandomValues() and call this function
+ * before any operation that uses RAND_bytes() (e.g. TDH2 encrypt).
+ *
+ * @param data  Pointer to entropy bytes
+ * @param size  Number of bytes (recommended: >= 48)
+ */
+EMSCRIPTEN_KEEPALIVE
+void wasm_seed_random(const uint8_t* data, int size) {
+  // Use both RAND_seed and RAND_add to ensure the DRBG is properly seeded.
+  // OpenSSL 3.x requires the DRBG to be initialized; RAND_add with high
+  // entropy estimate (== size) marks the pool as sufficiently seeded.
+  RAND_seed(data, size);
+  RAND_add(data, size, (double)size);
+}
+
+/**
+ * Test bn_t::rand range correctness.
+ * Returns 0 if OK, or error code.
+ */
+EMSCRIPTEN_KEEPALIVE
+int wasm_test_bn_rand() {
+  // Ed25519 order
+  bn_t q_val = bn_t::from_hex("1000000000000000000000000000000014DEF9DEA2F79CD65812631A5CF5D3ED");
+  mod_t q(q_val, true);
+
+  for (int i = 0; i < 100; i++) {
+    bn_t r = bn_t::rand(q_val);
+    if (r.sign() < 0) return 1;  // negative
+    if (r >= q_val) return 2;     // out of range
+    // Also test hash_number().mod(q)
+  }
+  return 0;
+}
+
+/**
+ * Diagnostic: test uint128 arithmetic correctness in WASM.
+ * Returns 0 if all tests pass, or a positive error code identifying the failure.
+ */
+EMSCRIPTEN_KEEPALIVE
+int wasm_test_uint128() {
+  // Test 1: 128-bit multiplication
+  unsigned __int128 a = (unsigned __int128)0xFFFFFFFFFFFFFFFFULL * 0xFFFFFFFFFFFFFFFFULL;
+  uint64_t hi = (uint64_t)(a >> 64);
+  uint64_t lo = (uint64_t)a;
+  if (hi != 0xFFFFFFFFFFFFFFFEULL || lo != 0x0000000000000001ULL) return 1;
+
+  // Test 2: 128-bit addition with carry
+  unsigned __int128 b = (unsigned __int128)0xFFFFFFFFFFFFFFFFULL + 1;
+  if ((uint64_t)(b >> 64) != 1 || (uint64_t)b != 0) return 2;
+
+  // Test 3: addx carry propagation
+  uint64_t carry = 0;
+  uint64_t r = addx(0xFFFFFFFFFFFFFFFFULL, 1ULL, carry);
+  if (r != 0 || carry != 1) return 3;
+
+  // Test 4: subx borrow propagation
+  uint64_t borrow = 0;
+  r = subx(0ULL, 1ULL, borrow);
+  if (r != 0xFFFFFFFFFFFFFFFFULL || borrow != 1) return 4;
+
+  // Test 5: 128-bit shift
+  unsigned __int128 c = (unsigned __int128)1 << 64;
+  if ((uint64_t)(c >> 64) != 1 || (uint64_t)c != 0) return 5;
+
+  // Test 6: field element multiply (small values)
+  unsigned __int128 d = (unsigned __int128)0x7FFFFFFFFFFFFFFFULL * 0x7FFFFFFFFFFFFFFFULL;
+  // Expected: 0x3FFFFFFFFFFFFFFF0000000000000001
+  if ((uint64_t)(d >> 64) != 0x3FFFFFFFFFFFFFFFULL) return 6;
+  if ((uint64_t)d != 0x0000000000000001ULL) return 6;
+
+  return 0;
+}
+
+/**
+ * Extract the label (associated data) from a serialized TDH2 ciphertext.
+ *
+ * @param ct_data   Serialized ciphertext bytes
+ * @param ct_size   Size of ct_data
+ * @param out_ptr   Output: pointer to malloc'd label bytes
+ * @param out_size  Output: size of label
+ * @return 0 on success
+ */
+EMSCRIPTEN_KEEPALIVE
+int wasm_tdh2_extract_label(
+  const uint8_t* ct_data, int ct_size,
+  uint8_t** out_ptr, int* out_size
+) {
+  if (!out_ptr || !out_size) return -1;
+
+  const uint8_t* core_data = nullptr;
+  int core_size = 0;
+  const uint8_t* label_data = nullptr;
+  int label_size = 0;
+  if (parse_envelope(ct_data, ct_size, &core_data, &core_size, &label_data, &label_size) != 0) {
+    // No valid envelope — return empty label
+    *out_size = 0;
+    *out_ptr = (uint8_t*)malloc(1);
+    return 0;
+  }
+
+  *out_size = label_size;
+  *out_ptr = (uint8_t*)malloc(label_size > 0 ? label_size : 1);
+  if (label_size > 0) {
+    memcpy(*out_ptr, label_data, label_size);
+  }
   return 0;
 }
 

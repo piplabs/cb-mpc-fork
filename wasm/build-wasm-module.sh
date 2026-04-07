@@ -42,7 +42,7 @@ mkdir -p "${OUT_DIR}"
 
 echo "Building cb-mpc TDH2 WASM module..."
 
-em++ -O3 \
+em++ -O0 -g \
   -std=c++17 \
   -fno-operator-names \
   -DNO_DEPRECATED_OPENSSL \
@@ -65,13 +65,16 @@ em++ -O3 \
     "_wasm_ac_new",
     "_wasm_ac_free",
     "_wasm_tdh2_combine",
-    "_wasm_ptr_size"
+    "_wasm_tdh2_extract_label",
+    "_wasm_ptr_size",
+    "_wasm_seed_random",
+    "_wasm_test_uint128"
   ]' \
   -s EXPORTED_RUNTIME_METHODS='["getValue","setValue","HEAPU8","HEAP32"]' \
   -s ALLOW_MEMORY_GROWTH=1 \
   -s ENVIRONMENT='web,node' \
   -s NO_EXIT_RUNTIME=1 \
-  -s FILESYSTEM=0 \
+  -s FILESYSTEM=1 \
   -s ASSERTIONS=0 \
   -I "${PROJECT_ROOT}/src/" \
   -I "${OPENSSL_DIR}/include" \
