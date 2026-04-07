@@ -1,0 +1,73 @@
+name: Build TDH2 WASM Module
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [tdh2-wasm, feat/wasm-seed-random]
+    paths:
+      - 'wasm/**'
+      - 'src/**'
+      - 'CMakeLists.txt'
+
+permissions:
+  contents: write
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.51
+
+      - name: Verify Emscripten
+        run: |
+          emcc --version
+          em++ --version
+
+      - name: Build OpenSSL for WASM
+        run: make openssl-wasm
+
+      - name: Build libcbmpc.a for WASM
+        run: make build-wasm
+
+      - name: Build WASM module
+        run: make wasm-module
+
+      - name: Verify output
+        run: |
+          ls -lh wasm/dist/cb-mpc-tdh2.js wasm/dist/cb-mpc-tdh2.wasm
+          echo "--- Checking exports ---"
+          # Verify _wasm_seed_random is in the JS glue
+          grep -q "wasm_seed_random" wasm/dist/cb-mpc-tdh2.js && echo "✅ _wasm_seed_random found" || echo "❌ _wasm_seed_random NOT found"
+          # SHA-256 for manifest
+          shasum -a 256 wasm/dist/cb-mpc-tdh2.wasm
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cb-mpc-tdh2-wasm
+          path: |
+            wasm/dist/cb-mpc-tdh2.js
+            wasm/dist/cb-mpc-tdh2.wasm
+          retention-days: 90
+
+      - name: Commit updated dist (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet wasm/dist/; then
+            echo "No changes to WASM dist"
+          else
+            git add wasm/dist/
+            git commit -m "chore: rebuild WASM module with updated exports"
+            git push
+          fi

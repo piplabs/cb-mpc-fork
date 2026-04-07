@@ -98,6 +98,27 @@ build:
 	${RUN_CMD} 'cmake -B build/$(BUILD_TYPE) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) -DBUILD_TESTS=ON && \
 	cmake --build build/$(BUILD_TYPE) -- -j$(CMAKE_NCORES)'
 
+.PHONY: openssl-wasm
+openssl-wasm:
+	@echo "Building custom OpenSSL for WASM (Emscripten)..."
+	${RUN_CMD} 'bash ./scripts/openssl/build-static-openssl-wasm.sh'
+
+.PHONY: build-wasm
+build-wasm: BUILD_TYPE = Release
+build-wasm:
+	@command -v emcmake >/dev/null 2>&1 || { echo "ERROR: emcmake not found. Please activate Emscripten SDK first."; exit 1; }
+	${RUN_CMD} 'emcmake cmake -B build/wasm-$(BUILD_TYPE) \
+		-DCMAKE_BUILD_TYPE=$(BUILD_TYPE) \
+		-DBUILD_TESTS=OFF \
+		-DBUILD_DUDECT=OFF && \
+	emmake cmake --build build/wasm-$(BUILD_TYPE) -- -j$(CMAKE_NCORES)'
+	@echo "WASM static library built at: lib/$(BUILD_TYPE)/libcbmpc.a"
+
+.PHONY: wasm-module
+wasm-module:
+	@echo "Building cb-mpc TDH2 WASM module..."
+	${RUN_CMD} 'bash ./wasm/build-wasm-module.sh'
+
 .PHONY: build-no-test
 build-no-test: BUILD_TYPE = Release# (Release/Debug/RelWithDebInfo)
 build-no-test:
