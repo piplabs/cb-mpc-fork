@@ -2,7 +2,7 @@ module github.com/coinbase/cb-mpc/demo-go-ecdsa-mpc-with-backup
 
 go 1.24.0
 
-toolchain go1.24.2
+toolchain go1.26.10
 
 replace github.com/coinbase/cb-mpc/demos-go/cb-mpc-go => ../../cb-mpc-go
 
