@@ -2,7 +2,7 @@ module github.com/coinbase/cb-mpc/demos-go/cb-mpc-go
 
 go 1.23.0
 
-toolchain go1.24.2
+toolchain go1.26.10
 
 require (
 	github.com/stretchr/testify v1.9.0
